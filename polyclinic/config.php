@@ -1,18 +1,12 @@
 <?php
 // Конфигурация базы данных - SQL Server
-define('DB_SERVER', 'WIN-E35DNA7AABF\SQLEXPRESS');
+define('DB_SERVER', 'WIN-E35DNA7AABF\\SQLEXPRESS');
 define('DB_NAME', 'MedicalClinicDB');
-define('DB_CONNECTION_STRING', 'Server=WIN-E35DNA7AABF\SQLEXPRESS;Database=MedicalClinicDB;Trusted_Connection=True;');
 
 // Настройки сайта
 define('SITE_NAME', 'Платная Поликлиника');
 define('SITE_URL', 'http://localhost/polyclinic');
 define('ADMIN_EMAIL', 'admin@polyclinic.ru');
-
-// Настройки сессии
-ini_set('session.cookie_httponly', 1);
-ini_set('session.use_only_cookies', 1);
-ini_set('session.cookie_secure', 0); // Установить 1 для HTTPS
 
 // Отображение ошибок (отключить на production)
 error_reporting(E_ALL);
@@ -21,83 +15,105 @@ ini_set('display_errors', 1);
 // Timezone
 date_default_timezone_set('Europe/Moscow');
 
-// Подключение к базе данных - SQL Server
-function getDBConnection() {
-    static $conn = null;
+// Глобальная переменная подключения
+$pdo = null;
+
+// Попытка подключения тремя способами
+function connectToDatabase() {
+    global $pdo;
     
-    if ($conn === null) {
+    $options = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ];
+    
+    $server = DB_SERVER;
+    $database = DB_NAME;
+    
+    // Способ 1: sqlsrv драйвер
+    if (extension_loaded('sqlsrv')) {
         try {
-            $conn = sqlsrv_connect(DB_SERVER, [
-                'Database' => DB_NAME,
-                'ConnectionPooling' => true,
-                'CharacterSet' => 'UTF-8',
-                'ReturnDatesAsStrings' => true
-            ]);
-            
-            if ($conn === false) {
-                $errors = sqlsrv_errors();
-                $errorMsg = '';
-                foreach ($errors as $error) {
-                    $errorMsg .= $error['message'] . "\n";
-                }
-                throw new Exception($errorMsg);
-            }
-        } catch (Exception $e) {
-            die("Ошибка подключения к базе данных: " . $e->getMessage());
+            $dsn = "sqlsrv:Server=$server;Database=$database";
+            $pdo = new PDO($dsn, null, null, $options);
+            return true;
+        } catch (PDOException $e) {
+            // Пробуем дальше
         }
     }
     
-    return $conn;
+    // Способ 2: ODBC Driver 17
+    try {
+        $dsn = "odbc:Driver={ODBC Driver 17 for SQL Server};Server=$server;Database=$database;Trusted_Connection=yes;";
+        $pdo = new PDO($dsn, "", "", $options);
+        return true;
+    } catch (PDOException $e) {
+        // Пробуем дальше
+    }
+    
+    // Способ 3: SQL Server Native Client
+    try {
+        $dsn = "odbc:Driver={SQL Server Native Client 11.0};Server=$server;Database=$database;Trusted_Connection=yes;";
+        $pdo = new PDO($dsn, "", "", $options);
+        return true;
+    } catch (PDOException $e) {
+        // Пробуем дальше
+    }
+    
+    // Если ничего не сработало - выводим инструкцию
+    die("<h1>Ошибка подключения к базе данных</h1>" .
+        "<p>Автоматическое подключение не удалось.</p>" .
+        "<p><b>Доступные расширения PHP:</b> " . implode(', ', get_loaded_extensions()) . "</p>" .
+        "<hr>" .
+        "<h3>Что делать:</h3>" .
+        "<p><b>Вариант 1 (Рекомендуемый): Установить драйверы Microsoft для PHP</b></p>" .
+        "<ol>" .
+        "<li>Скачайте установщик <a href='https://aka.ms/download-php-sqlsrv' target='_blank'>Microsoft Drivers for PHP for SQL Server</a>.</li>" .
+        "<li>Запустите установщик, он сам найдет ваш PHP и предложит установить драйверы.</li>" .
+        "<li>Выберите версию под ваш PHP (скорее всего 7.2 или 7.4).</li>" .
+        "<li>После установки перезапустите OpenServer.</li>" .
+        "</ol>" .
+        "<p><b>Вариант 2: Проверить ODBC драйверы Windows</b></p>" .
+        "<ol>" .
+        "<li>Откройте Панель управления -> Администрирование -> Источники данных ODBC (64-бит).</li>" .
+        "<li>Проверьте, есть ли в списке драйвер 'ODBC Driver 17 for SQL Server' или 'SQL Server Native Client 11.0'.</li>" .
+        "<li>Если нет - скачайте и установите <a href='https://go.microsoft.com/fwlink/?linkid=2182774' target='_blank'>ODBC Driver 17</a>.</li>" .
+        "</ol>"
+    );
 }
 
-// Функция для выполнения запроса и получения результата
+// Подключаемся при первом вызове
+connectToDatabase();
+
+// Функция для выполнения запроса
 function dbQuery($sql, $params = []) {
-    $conn = getDBConnection();
-    $stmt = sqlsrv_query($conn, $sql, $params);
-    
-    if ($stmt === false) {
-        $errors = sqlsrv_errors();
-        $errorMsg = '';
-        foreach ($errors as $error) {
-            $errorMsg .= $error['message'] . "\n";
-        }
-        throw new Exception("Ошибка выполнения запроса: " . $errorMsg);
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        return $stmt;
+    } catch (PDOException $e) {
+        die("Ошибка БД: " . $e->getMessage());
     }
-    
-    return $stmt;
 }
 
 // Функция для получения всех результатов
 function dbFetchAll($stmt) {
-    $results = [];
-    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-        // Преобразуем даты в строки
-        foreach ($row as $key => $value) {
-            if ($value instanceof DateTime) {
-                $row[$key] = $value->format('Y-m-d H:i:s');
-            }
-        }
-        $results[] = $row;
-    }
-    return $results;
+    return $stmt->fetchAll();
 }
 
 // Функция для получения одной записи
 function dbFetchOne($stmt) {
-    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
-    if ($row) {
-        foreach ($row as $key => $value) {
-            if ($value instanceof DateTime) {
-                $row[$key] = $value->format('Y-m-d H:i:s');
-            }
-        }
-    }
-    return $row;
+    return $stmt->fetch();
 }
 
 // Функция для безопасного вывода
 function e($string) {
     return htmlspecialchars($string, ENT_QUOTES, 'UTF-8');
+}
+
+// Старт сессии если не запущена
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
 }
 
 // Проверка авторизации администратора
